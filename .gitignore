@@ -1,0 +1,4 @@
+# Ignorar binarios de compilación
+*.exe
+*.out
+*.bin
