@@ -1,17 +1,62 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
 	"fmt"
-	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
-	"TP/models/regression"
+	"TP_concurrente/models/regression"
 )
 
-// loadDataset reads a CSV file and splits it into features (X) and targets (Y)
+var X [][]float64
+var Y []float64
+var model *regression.LogisticRegressionConcurrent
+var trained bool
+var outputFile *os.File
+
+func main() {
+	var err error
+	outputFile, err = os.Create("output.txt")
+	if err != nil {
+		fmt.Println("Error creando output.txt:", err)
+		return
+	}
+	defer outputFile.Close()
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for {
+		fmt.Println("\n========= MENÚ PRINCIPAL =========")
+		fmt.Println("1. Cargar dataset")
+		fmt.Println("2. Entrenar modelo")
+		fmt.Println("3. Evaluar precisión")
+		fmt.Println("4. Ejecutar simulación Promela")
+		fmt.Println("5. Salir")
+		fmt.Print("Seleccione una opción: ")
+
+		scanner.Scan()
+		switch scanner.Text() {
+		case "1":
+			loadDatasetMenu()
+		case "2":
+			trainModelMenu()
+		case "3":
+			evaluateModelMenu()
+		case "4":
+			runPromelaSimulation()
+		case "5":
+			fmt.Println("Saliendo del programa.")
+			return
+		default:
+			fmt.Println("Opción inválida.")
+		}
+	}
+}
+
 func loadDataset(path string) ([][]float64, []float64, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -20,22 +65,17 @@ func loadDataset(path string) ([][]float64, []float64, error) {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-
 	headers, err := reader.Read()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Mapa de nombres de columnas a índices
 	colIndex := make(map[string]int)
 	for i, name := range headers {
 		colIndex[name] = i
 	}
 
-	requiredCols := []string{
-		"amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest", "isFraud",
-	}
-
+	requiredCols := []string{"amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest", "isFraud"}
 	for _, col := range requiredCols {
 		if _, ok := colIndex[col]; !ok {
 			return nil, nil, fmt.Errorf("missing required column: %s", col)
@@ -44,27 +84,23 @@ func loadDataset(path string) ([][]float64, []float64, error) {
 
 	var X [][]float64
 	var Y []float64
-
 	for {
 		record, err := reader.Read()
 		if err != nil {
 			break
 		}
-
 		var features []float64
-		for _, col := range requiredCols[:5] { // solo las features
+		for _, col := range requiredCols[:5] {
 			val, err := strconv.ParseFloat(record[colIndex[col]], 64)
 			if err != nil {
-				val = 0.0 // por si hay valores vacíos o inválidos
+				val = 0.0
 			}
 			features = append(features, val)
 		}
-
 		target, err := strconv.ParseFloat(record[colIndex["isFraud"]], 64)
 		if err != nil {
 			return nil, nil, err
 		}
-
 		X = append(X, features)
 		Y = append(Y, target)
 	}
@@ -73,7 +109,69 @@ func loadDataset(path string) ([][]float64, []float64, error) {
 	return X, Y, nil
 }
 
-// calculateAccuracy computes the accuracy of predictions
+func loadDatasetMenu() {
+	var err error
+	X, Y, err = loadDataset("Cifer-Fraud-Detection-Dataset-AF-part-1-14.csv")
+	if err != nil {
+		fmt.Println("Error al cargar dataset:", err)
+		return
+	}
+	trained = false
+	fmt.Fprintf(outputFile, "✅ Dataset cargado con %d muestras\n", len(X))
+	fmt.Println("Dataset cargado exitosamente.")
+}
+
+func trainModelMenu() {
+	if len(X) == 0 {
+		fmt.Println("Primero debe cargar el dataset.")
+		return
+	}
+	model = regression.NewLogisticRegressionConcurrent(0.01, 500)
+	splitIndex := int(0.8 * float64(len(X)))
+	XTrain, YTrain := X[:splitIndex], Y[:splitIndex]
+	start := time.Now()
+	model.TrainConcurrently(XTrain, YTrain, 8)
+	elapsed := time.Since(start)
+	trained = true
+	fmt.Fprintf(outputFile, "✅ Modelo entrenado en %s\n", elapsed)
+	fmt.Printf("Modelo entrenado en %s\n", elapsed)
+}
+
+func evaluateModelMenu() {
+	if !trained {
+		fmt.Println("Primero debe entrenar el modelo.")
+		return
+	}
+	splitIndex := int(0.8 * float64(len(X)))
+	XTest, YTest := X[splitIndex:], Y[splitIndex:]
+	preds := model.Predict(XTest)
+	acc := calculateAccuracy(preds, YTest)
+	fmt.Printf("Precisión del modelo: %.2f%%\n", acc*100)
+	fmt.Fprintf(outputFile, "🎯 Precisión del modelo: %.2f%%\n", acc*100)
+}
+
+func runPromelaSimulation() {
+	fmt.Println("Ejecutando simulación con Promela...")
+	commands := []string{
+		"spin -a logistic.pml",
+		"gcc -o pan pan.c",
+		"./pan -a",
+	}
+	for _, cmdStr := range commands {
+		fmt.Println("->", cmdStr)
+		cmd := exec.Command("bash", "-c", cmdStr)
+		cmd.Stdout = outputFile
+		cmd.Stderr = outputFile
+		err := cmd.Run()
+		if err != nil {
+			fmt.Println("❌ Error al ejecutar:", cmdStr)
+			fmt.Fprintf(outputFile, "❌ Error en comando: %s -> %v\n", cmdStr, err)
+			return
+		}
+	}
+	fmt.Println("✅ Simulación ejecutada. Resultados en output.txt")
+}
+
 func calculateAccuracy(preds, actuals []float64) float64 {
 	correct := 0
 	for i := 0; i < len(preds); i++ {
@@ -82,32 +180,4 @@ func calculateAccuracy(preds, actuals []float64) float64 {
 		}
 	}
 	return float64(correct) / float64(len(preds))
-}
-
-func main() {
-	// Cargar el dataset
-	X, Y, err := loadDataset("Cifer-Fraud-Detection-Dataset-AF-part-1-14.csv")
-	if err != nil {
-		log.Fatalf("Error loading dataset: %v", err)
-	}
-
-	// Dividir en entrenamiento y prueba (80% entrenamiento, 20% prueba)
-	splitIndex := int(0.8 * float64(len(X)))
-	XTrain, YTrain := X[:splitIndex], Y[:splitIndex]
-	XTest, YTest := X[splitIndex:], Y[splitIndex:]
-
-	// Crear y entrenar el modelo de regresión logística concurrente
-	model := regression.NewLogisticRegressionConcurrent(0.01, 500)
-	start := time.Now()
-	model.TrainConcurrently(XTrain, YTrain, 8)
-	elapsed := time.Since(start)
-
-	// Realizar predicciones y evaluar precisión
-	preds := model.Predict(XTest)
-	accuracy := calculateAccuracy(preds, YTest)
-
-	fmt.Printf("Training time: %s\n", elapsed)
-	fmt.Printf("First 3 weights: %.4f %.4f %.4f ...\n", model.Weights[0], model.Weights[1], model.Weights[2])
-	fmt.Printf("Bias: %.4f\n", model.Bias)
-	fmt.Printf("Accuracy: %.2f%%\n", accuracy*100)
 }
