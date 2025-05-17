@@ -12,9 +12,6 @@ pan
 pan.*
 pan.[bchmpt]
 
-# Archivo de salida del programa
-output.txt
-
 # Archivos del sistema operativo
 .DS_Store
 Thumbs.db
